@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<title>Teleprompter Editor</title>
+<style>
+  :root { --acc: #ffb000; --bg: #111; --card: #1d1d1d; --line: #2c2c2c; --mut: #9a9a9a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: #eee; font-size: 16px; }
+  header { position: sticky; top: 0; z-index: 5; background: #181818; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px; min-height: 54px; }
+  header h1 { font-size: 19px; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header button { background: none; border: 0; color: var(--acc); font-size: 17px; padding: 6px 8px; }
+  main { max-width: 760px; margin: 0 auto; padding: 12px 12px 96px; }
+  nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: #181818; border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom); z-index: 5; }
+  nav button { flex: 1; background: none; border: 0; color: var(--mut); padding: 10px 0 12px; font-size: 13px; }
+  nav button span { display: block; font-size: 22px; }
+  nav button.on { color: var(--acc); }
+  .list { background: var(--card); border-radius: 12px; overflow: hidden; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: 0; }
+  .item .t { flex: 1; min-width: 0; }
+  .item .t b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .item .t small { color: var(--mut); }
+  .item.tap { cursor: pointer; } .item.tap:active { background: #262626; }
+  .nr { color: var(--acc); font-weight: bold; width: 26px; text-align: right; }
+  .ib { background: #2a2a2a; border: 0; color: #ddd; border-radius: 8px; width: 38px; height: 38px; font-size: 17px; }
+  .ib.del { color: #ff8a8a; }
+  label { display: block; color: var(--mut); font-size: 13px; margin: 14px 0 5px; }
+  input[type=text], input[type=date], input[type=url], select, textarea { width: 100%; background: var(--card); color: #fff;
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-size: 17px; font-family: inherit; }
+  textarea { resize: vertical; line-height: 1.4; }
+  textarea.lyr { min-height: 55vh; }
+  textarea.bass { min-height: 84px; color: #4fd1ff; }
+  .row { display: flex; gap: 10px; } .row > div { flex: 1; }
+  .btn { display: block; width: 100%; padding: 15px; border-radius: 12px; border: 0; font-size: 17px; font-weight: 600;
+    background: var(--acc); color: #000; margin-top: 12px; text-align: center; }
+  .btn.sec { background: #2a2a2a; color: #fff; }
+  .btn.danger { background: none; color: #ff8a8a; border: 1px solid #5a2a2a; }
+  .hint { color: var(--mut); font-size: 13px; line-height: 1.5; margin: 6px 2px; }
+  .hint code { color: var(--acc); }
+  .empty { text-align: center; color: var(--mut); padding: 30px 10px; }
+  .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #2e2e2e; color: #fff;
+    padding: 12px 18px; border-radius: 12px; z-index: 20; box-shadow: 0 4px 20px #0008; max-width: 90vw; }
+  .sheet { position: fixed; inset: 0; background: #000a; z-index: 15; display: flex; align-items: flex-end; }
+  .sheet > div { background: #181818; width: 100%; max-height: 85vh; overflow: auto; border-radius: 16px 16px 0 0; padding: 14px; }
+  .sheet .added { color: var(--acc); }
+  .chk { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: #ddd; }
+  .chk input { width: 22px; height: 22px; }
+</style>
+</head>
+<body>
+<header><button id="back" hidden>‹ Zurück</button><h1 id="title">Teleprompter</h1><span id="hdrR"></span></header>
+<main id="view"></main>
+<nav>
+  <button data-tab="sets"><span>🎶</span>Setlisten</button>
+  <button data-tab="songs"><span>📝</span>Songs</button>
+  <button data-tab="settings"><span>⚙️</span>Einstellungen</button>
+</nav>
+<script>
+"use strict";
+// =================== Daten ===================
+const KEY = "tp-lib-v1";
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const h = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let lib;
+try { lib = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
+if (!lib || !Array.isArray(lib.songs)) lib = { songs: [], setlists: [], settings: {} };
+lib.settings = Object.assign({ target: "http://10.42.0.1" }, lib.settings || {});
+let saveT, dirty = false;
+function save(now) {   // save() = Aenderung merken, save(true) = ausstehende Aenderung sofort schreiben
+  if (!now) dirty = true;
+  clearTimeout(saveT);
+  const w = () => { if (!dirty) return; try { localStorage.setItem(KEY, JSON.stringify(lib)); dirty = false; } catch (e) { toast("⚠️ Speichern fehlgeschlagen: " + e.message); } };
+  now ? w() : (saveT = setTimeout(w, 250));
+}
+addEventListener("pagehide", () => save(true));
+document.addEventListener("visibilitychange", () => document.hidden && save(true));
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+
+const song = id => lib.songs.find(s => s.id === id);
+const setl = id => lib.setlists.find(s => s.id === id);
+const byTitle = (a, b) => (a.title || "").localeCompare(b.title || "", "de");
+
+// =================== UI-Helfer ===================
+const $ = id => document.getElementById(id);
+function toast(t, ms = 2600) {
+  const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d);
+  setTimeout(() => d.remove(), ms);
+}
+let stack = [];
+function show(viewFn, ...args) { stack.push([viewFn, args]); draw(); }
+function back() { save(true); stack.pop(); if (!stack.length) stack = [[viewSets, []]]; draw(); }
+function tab(name) {
+  save(true);
+  stack = [[{ sets: viewSets, songs: viewSongs, settings: viewSettings }[name], []]]; draw();
+}
+function draw() {
+  const [fn, args] = stack[stack.length - 1];
+  $("back").hidden = stack.length < 2; $("hdrR").innerHTML = "";
+  fn(...args); scrollTo(0, 0);
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === stack[0][0].tab));
+}
+$("back").onclick = back;
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => tab(b.dataset.tab));
+function setTitle(t, right = "") { $("title").textContent = t; $("hdrR").innerHTML = right; }
+
+// =================== Setlisten ===================
+function viewSets() {
+  setTitle("Setlisten", `<button id="newSet">＋ Neu</button>`);
+  const sets = [...lib.setlists].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  $("view").innerHTML = sets.length ? `<div class="list">${sets.map(s => `
+      <div class="item tap" data-id="${s.id}"><div class="t"><b>${h(s.name || "Ohne Namen")}</b>
+      <small>${s.date ? new Date(s.date).toLocaleDateString("de-DE") + " · " : ""}${s.songIds.length} Songs</small></div><span>›</span></div>`).join("")}</div>`
+    : `<div class="empty">Noch keine Setliste.<br>Lege zuerst unter <b>Songs</b> deine Lieder an<br>und dann hier mit <b>＋ Neu</b> eine Setlist.</div>`;
+  $("newSet").onclick = () => {
+    const s = { id: uid(), name: "Neue Setlist", date: new Date().toISOString().slice(0, 10), songIds: [], fontSize: "L", uppercase: false };
+    lib.setlists.push(s); save(); show(viewSet, s.id);
+  };
+  $("view").querySelectorAll(".item").forEach(el => el.onclick = () => show(viewSet, el.dataset.id));
+}
+viewSets.tab = "sets";
+
+function viewSet(id) {
+  const s = setl(id); if (!s) return back();
+  s.songIds = s.songIds.filter(song);
+  setTitle(s.name || "Setlist");
+  const rows = s.songIds.map((sid, i) => { const g = song(sid); return `
+    <div class="item"><span class="nr">${i + 1}</span><div class="t tap" data-edit="${sid}"><b>${h(g.title || "Ohne Titel")}</b>
+    <small>${[g.key && "Tonart " + g.key, g.bpm && g.bpm + " BPM"].filter(Boolean).map(h).join(" · ")}</small></div>
+    <button class="ib" data-up="${i}">↑</button><button class="ib" data-down="${i}">↓</button><button class="ib del" data-rm="${i}">✕</button></div>`; }).join("");
+  $("view").innerHTML = `
+    <label>Name</label><input type="text" id="sName" value="${h(s.name)}">
+    <div class="row"><div><label>Datum</label><input type="date" id="sDate" value="${h(s.date)}"></div>
+      <div><label>Schriftgröße</label><select id="sFont">${["S", "M", "L", "XL"].map(f => `<option ${s.fontSize === f ? "selected" : ""}>${f}</option>`).join("")}</select></div></div>
+    <label class="chk"><input type="checkbox" id="sUpper" ${s.uppercase ? "checked" : ""}> Text in GROSSBUCHSTABEN</label>
+    <label>Songs (${s.songIds.length})</label>
+    ${s.songIds.length ? `<div class="list">${rows}</div>` : `<div class="hint">Noch keine Songs in dieser Setlist.</div>`}
+    <button class="btn sec" id="addSongs">＋ Songs hinzufügen</button>
+    <button class="btn" id="send">📡 An Teleprompter senden</button>
+    <button class="btn sec" id="file">💾 Als Datei speichern</button>
+    <div class="hint">Zum Senden das Handy mit dem WLAN <code>Teleprompter</code> verbinden. Wenn Android meldet „Kein Internet“, „Verbindung beibehalten“ wählen.</div>
+    <button class="btn sec" id="dup">⧉ Setlist duplizieren</button>
+    <button class="btn danger" id="del">Setlist löschen</button>`;
+  $("sName").oninput = e => { s.name = e.target.value; $("title").textContent = s.name; save(); };
+  $("sDate").onchange = e => { s.date = e.target.value; save(); };
+  $("sFont").onchange = e => { s.fontSize = e.target.value; save(); };
+  $("sUpper").onchange = e => { s.uppercase = e.target.checked; save(); };
+  const v = $("view");
+  v.querySelectorAll("[data-up]").forEach(b => b.onclick = () => { const i = +b.dataset.up; if (i > 0) { [s.songIds[i - 1], s.songIds[i]] = [s.songIds[i], s.songIds[i - 1]]; save(); draw(); } });
+  v.querySelectorAll("[data-down]").forEach(b => b.onclick = () => { const i = +b.dataset.down; if (i < s.songIds.length - 1) { [s.songIds[i + 1], s.songIds[i]] = [s.songIds[i], s.songIds[i + 1]]; save(); draw(); } });
+  v.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { s.songIds.splice(+b.dataset.rm, 1); save(); draw(); });
+  v.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => show(viewSong, b.dataset.edit));
+  $("addSongs").onclick = () => pickSongs(s);
+  $("send").onclick = () => sendSet(s);
+  $("file").onclick = () => download(`teleprompter-${slug(s.name)}.json`, buildShow(s));
+  $("dup").onclick = () => { const c = { ...s, id: uid(), name: s.name + " (Kopie)", songIds: [...s.songIds] }; lib.setlists.push(c); save(); stack.pop(); show(viewSet, c.id); };
+  $("del").onclick = () => { if (confirm(`Setlist „${s.name}“ löschen? Die Songs bleiben erhalten.`)) { lib.setlists = lib.setlists.filter(x => x !== s); save(); back(); } };
+}
+
+function pickSongs(s) {
+  const wrap = document.createElement("div"); wrap.className = "sheet";
+  wrap.innerHTML = `<div><div class="row" style="align-items:center"><b style="flex:1;font-size:18px">Songs hinzufügen</b>
+    <button class="ib" id="pkClose" style="width:auto;padding:0 14px">Fertig</button></div>
+    <input type="text" id="pkQ" placeholder="Suchen …" style="margin:12px 0">
+    <div class="list" id="pkList"></div>
+    <button class="btn sec" id="pkNew">＋ Neuen Song anlegen</button></div>`;
+  document.body.appendChild(wrap);
+  const fill = () => {
+    const q = $("pkQ").value.toLowerCase();
+    const list = [...lib.songs].sort(byTitle).filter(g => !q || (g.title + " " + g.artist).toLowerCase().includes(q));
+    $("pkList").innerHTML = list.map(g => { const n = s.songIds.filter(x => x === g.id).length; return `
+      <div class="item tap" data-id="${g.id}"><div class="t"><b>${h(g.title || "Ohne Titel")}</b><small>${h(g.artist)}</small></div>
+      <span class="added">${n ? "✓ " + (n > 1 ? n + "×" : "") : "＋"}</span></div>`; }).join("") || `<div class="empty">Keine Songs gefunden.</div>`;
+    $("pkList").querySelectorAll(".item").forEach(el => el.onclick = () => { s.songIds.push(el.dataset.id); save(); toast("Hinzugefügt", 900); fill(); });
+  };
+  $("pkQ").oninput = fill; fill();
+  $("pkClose").onclick = () => { wrap.remove(); draw(); };
+  $("pkNew").onclick = () => { wrap.remove(); const g = newSong(); s.songIds.push(g.id); save(); show(viewSong, g.id); };
+}
+
+// =================== Songs ===================
+function newSong() {
+  const g = { id: uid(), title: "", artist: "", key: "", bpm: "", bass: "", lyrics: "", fontScale: 1 };
+  lib.songs.push(g); save(); return g;
+}
+let songQuery = "";
+function viewSongs() {
+  setTitle(`Songs (${lib.songs.length})`, `<button id="newSong">＋ Neu</button>`);
+  $("view").innerHTML = `<input type="text" id="q" placeholder="Suchen …" value="${h(songQuery)}"><div style="height:12px"></div><div id="sl"></div>`;
+  const fill = () => {
+    const q = songQuery.toLowerCase();
+    const list = [...lib.songs].sort(byTitle).filter(g => !q || (g.title + " " + g.artist + " " + g.lyrics).toLowerCase().includes(q));
+    $("sl").innerHTML = list.length ? `<div class="list">${list.map(g => `
+      <div class="item tap" data-id="${g.id}"><div class="t"><b>${h(g.title || "Ohne Titel")}</b>
+      <small>${[g.artist, g.key && "Tonart " + g.key].filter(Boolean).map(h).join(" · ") || "&nbsp;"}</small></div><span>›</span></div>`).join("")}</div>`
+      : `<div class="empty">${lib.songs.length ? "Nichts gefunden." : "Noch keine Songs. Tippe oben auf <b>＋ Neu</b>."}</div>`;
+    $("sl").querySelectorAll(".item").forEach(el => el.onclick = () => show(viewSong, el.dataset.id));
+  };
+  $("q").oninput = e => { songQuery = e.target.value; fill(); }; fill();
+  $("newSong").onclick = () => show(viewSong, newSong().id);
+}
+viewSongs.tab = "songs";
+
+function viewSong(id) {
+  const g = song(id); if (!g) return back();
+  setTitle(g.title || "Neuer Song");
+  $("view").innerHTML = `
+    <label>Titel</label><input type="text" id="gTitle" value="${h(g.title)}" placeholder="Songtitel">
+    <label>Interpret (optional)</label><input type="text" id="gArtist" value="${h(g.artist)}">
+    <div class="row"><div><label>Tonart</label><input type="text" id="gKey" value="${h(g.key)}" placeholder="z.B. E"></div>
+      <div><label>Tempo (BPM)</label><input type="text" id="gBpm" inputmode="numeric" value="${h(g.bpm)}"></div>
+      <div><label>Textgröße</label><select id="gScale">${[[0.7, "kleiner"], [0.85, "etwas kleiner"], [1, "normal"], [1.15, "größer"], [1.3, "viel größer"]]
+        .map(([v, t]) => `<option value="${v}" ${Math.abs((g.fontScale || 1) - v) < .01 ? "selected" : ""}>${t}</option>`).join("")}</select></div></div>
+    <label>🎸 Bass-Grundtöne (erscheinen auf der ersten Seite)</label>
+    <textarea class="bass" id="gBass" placeholder="z.B.&#10;Strophe: E – A – E – B&#10;Refrain: A – B – E">${h(g.bass)}</textarea>
+    <label>Liedtext</label>
+    <textarea class="lyr" id="gLyr" placeholder="Text hier eingeben oder einfügen …">${h(g.lyrics)}</textarea>
+    <div class="hint">Leerzeile = neuer Abschnitt (wird nicht zerschnitten, wenn er auf eine Seite passt) ·
+      <code>[Refrain]</code> in eigener Zeile = kleine Überschrift · <code>---</code> in eigener Zeile = neue Seite erzwingen</div>
+    <button class="btn danger" id="gDel">Song löschen</button>`;
+  const bind = (el, key, f = v => v) => $(el).oninput = e => { g[key] = f(e.target.value); if (key === "title") $("title").textContent = g.title || "Neuer Song"; save(); };
+  bind("gTitle", "title"); bind("gArtist", "artist"); bind("gKey", "key"); bind("gBpm", "bpm"); bind("gBass", "bass"); bind("gLyr", "lyrics");
+  $("gScale").onchange = e => { g.fontScale = parseFloat(e.target.value); save(); };
+  if (!g.title) $("gTitle").focus();
+  $("gDel").onclick = () => {
+    const used = lib.setlists.filter(s => s.songIds.includes(g.id)).length;
+    if (confirm(`Song „${g.title || "Ohne Titel"}“ löschen?` + (used ? `\nEr wird auch aus ${used} Setlist(en) entfernt.` : ""))) {
+      lib.songs = lib.songs.filter(x => x !== g); lib.setlists.forEach(s => s.songIds = s.songIds.filter(x => x !== g.id)); save(); back();
+    }
+  };
+}
+
+// =================== Einstellungen / Backup ===================
+function viewSettings() {
+  setTitle("Einstellungen");
+  $("view").innerHTML = `
+    <label>Adresse des Teleprompters</label>
+    <input type="url" id="tgt" value="${h(lib.settings.target)}">
+    <div class="hint">Standard im Pi-Hotspot: <code>http://10.42.0.1</code></div>
+    <button class="btn sec" id="open">Teleprompter-Seite öffnen</button>
+    <label>Sicherung</label>
+    <div class="hint">Alle Songs und Setlisten liegen nur auf diesem Gerät im Browser. Mach ab und zu eine Sicherung –
+      damit kannst du auch alles aufs Tablet übertragen.</div>
+    <button class="btn" id="exp">⬇️ Sicherung exportieren</button>
+    <label class="btn sec">⬆️ Sicherung / Setlist-Datei importieren<input type="file" id="imp" accept=".json,application/json" hidden></label>
+    <div class="hint" style="margin-top:20px">${lib.songs.length} Songs · ${lib.setlists.length} Setlisten</div>`;
+  $("tgt").onchange = e => { lib.settings.target = e.target.value.trim().replace(/\/+$/, ""); save(); toast("Gespeichert"); };
+  $("open").onclick = () => window.open(lib.settings.target + "/", "_blank");
+  $("exp").onclick = () => download(`teleprompter-sicherung-${new Date().toISOString().slice(0, 10)}.json`,
+    { format: "teleprompter-library-1", exported: new Date().toISOString(), songs: lib.songs, setlists: lib.setlists });
+  $("imp").onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try { importData(JSON.parse(await f.text())); } catch (err) { toast("❌ Datei nicht lesbar: " + err.message); }
+    e.target.value = ""; draw();
+  };
+}
+viewSettings.tab = "settings";
+
+function importData(d) {
+  if (d.format === "teleprompter-library-1") {
+    let n = 0;
+    for (const g of d.songs || []) { const i = lib.songs.findIndex(x => x.id === g.id); i >= 0 ? lib.songs[i] = g : lib.songs.push(g); n++; }
+    for (const s of d.setlists || []) { const i = lib.setlists.findIndex(x => x.id === s.id); i >= 0 ? lib.setlists[i] = s : lib.setlists.push(s); }
+    save(); save(true); toast(`✅ ${n} Songs, ${(d.setlists || []).length} Setlisten importiert`);
+  } else if (d.format === "teleprompter-1" && Array.isArray(d.songs)) {   // eine gesendete Setlist zurueckholen
+    const ids = d.songs.map(x => { const g = { id: uid(), title: x.title || "", artist: x.artist || "", key: x.key || "", bpm: x.bpm || "", bass: x.bass || "", lyrics: x.lyrics || "", fontScale: x.fontScale || 1 }; lib.songs.push(g); return g.id; });
+    lib.setlists.push({ id: uid(), name: d.name || "Importiert", date: new Date().toISOString().slice(0, 10), songIds: ids, fontSize: d.display?.fontSize || "L", uppercase: !!d.display?.uppercase });
+    save(); save(true); toast(`✅ Setlist „${d.name}“ mit ${ids.length} Songs importiert`);
+  } else throw new Error("unbekanntes Format");
+}
+
+// =================== Senden ===================
+const slug = s => (s || "setlist").toLowerCase().replace(/[^a-z0-9äöüß]+/g, "-").replace(/^-|-$/g, "") || "setlist";
+function buildShow(s) {
+  return {
+    format: "teleprompter-1", name: s.name || "Setlist", created: new Date().toISOString(),
+    display: { fontSize: s.fontSize || "L", uppercase: !!s.uppercase },
+    songs: s.songIds.map(song).filter(Boolean).map(({ title, artist, key, bpm, bass, lyrics, fontScale }) => ({ title, artist, key, bpm, bass, lyrics, fontScale })),
+  };
+}
+function download(name, obj) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" }));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast("Datei gespeichert (Downloads)");
+}
+async function gzipB64url(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function sendSet(s) {
+  if (!s.songIds.length) return toast("Die Setlist ist leer.");
+  save(true);
+  const data = buildShow(s), target = lib.settings.target.replace(/\/+$/, "");
+  // Editor laeuft direkt auf dem Pi -> einfach per POST
+  if (location.origin === target) {
+    try {
+      const d = await (await fetch("/api/show", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) })).json();
+      return toast(d.ok ? `✅ „${d.name}“ (${d.songs} Songs) gesendet` : "❌ " + d.error);
+    } catch (e) { return toast("❌ Teleprompter nicht erreichbar"); }
+  }
+  // sonst: Daten komprimiert im Link mitgeben; die Pi-Seite uebernimmt sie
+  const url = `${target}/#d=${await gzipB64url(JSON.stringify(data))}`;
+  const w = window.open(url, "_blank");
+  if (!w) location.href = url;
+}
+
+// =================== Start ===================
+stack = [[viewSets, []]]; draw();
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
